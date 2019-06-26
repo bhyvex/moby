@@ -41,6 +41,7 @@ package cluster // import "github.com/docker/docker/daemon/cluster"
 import (
 	"context"
 	"fmt"
+	"math"
 	"net"
 	"os"
 	"path/filepath"
@@ -67,9 +68,10 @@ const stateFile = "docker-state.json"
 const defaultAddr = "0.0.0.0:2377"
 
 const (
-	initialReconnectDelay = 100 * time.Millisecond
-	maxReconnectDelay     = 30 * time.Second
-	contextPrefix         = "com.docker.swarm"
+	initialReconnectDelay          = 100 * time.Millisecond
+	maxReconnectDelay              = 30 * time.Second
+	contextPrefix                  = "com.docker.swarm"
+	defaultRecvSizeForListResponse = math.MaxInt32 // the max recv limit grpc <1.4.0
 )
 
 // NetworkSubnetsProvider exposes functions for retrieving the subnets
@@ -184,8 +186,11 @@ func (c *Cluster) Start() error {
 	}
 	c.nr = nr
 
+	timer := time.NewTimer(swarmConnectTimeout)
+	defer timer.Stop()
+
 	select {
-	case <-time.After(swarmConnectTimeout):
+	case <-timer.C:
 		logrus.Error("swarm component could not be started before timeout was reached")
 	case err := <-nr.Ready():
 		if err != nil {

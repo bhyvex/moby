@@ -338,11 +338,14 @@ func (d *Driver) Remove(id string) error {
 		// If permission denied, it's possible that the scratch is still mounted, an
 		// artifact after a hard daemon crash for example. Worth a shot to try detaching it
 		// before retrying the rename.
-		if detachErr := vhd.DetachVhd(filepath.Join(layerPath, "sandbox.vhdx")); detachErr != nil {
-			return errors.Wrapf(err, "failed to detach VHD: %s", detachErr)
-		}
-		if renameErr := os.Rename(layerPath, tmpLayerPath); renameErr != nil && !os.IsNotExist(renameErr) {
-			return errors.Wrapf(err, "second rename attempt following detach failed: %s", renameErr)
+		sandbox := filepath.Join(layerPath, "sandbox.vhdx")
+		if _, statErr := os.Stat(sandbox); statErr == nil {
+			if detachErr := vhd.DetachVhd(sandbox); detachErr != nil {
+				return errors.Wrapf(err, "failed to detach VHD: %s", detachErr)
+			}
+			if renameErr := os.Rename(layerPath, tmpLayerPath); renameErr != nil && !os.IsNotExist(renameErr) {
+				return errors.Wrapf(err, "second rename attempt following detach failed: %s", renameErr)
+			}
 		}
 	}
 	if err := hcsshim.DestroyLayer(d.info, tmpID); err != nil {
@@ -456,7 +459,7 @@ func (d *Driver) Cleanup() error {
 
 	// Note we don't return an error below - it's possible the files
 	// are locked. However, next time around after the daemon exits,
-	// we likely will be able to to cleanup successfully. Instead we log
+	// we likely will be able to cleanup successfully. Instead we log
 	// warnings if there are errors.
 	for _, item := range items {
 		if item.IsDir() && strings.HasSuffix(item.Name(), "-removing") {

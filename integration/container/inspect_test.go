@@ -16,7 +16,7 @@ import (
 )
 
 func TestInspectCpusetInConfigPre120(t *testing.T) {
-	skip.If(t, testEnv.DaemonInfo.OSType != "linux" || !testEnv.DaemonInfo.CPUSet)
+	skip.If(t, testEnv.DaemonInfo.OSType == "windows" || !testEnv.DaemonInfo.CPUSet)
 
 	defer setupTest(t)()
 	client := request.NewAPIClient(t, client.WithVersion("1.19"))
@@ -24,7 +24,7 @@ func TestInspectCpusetInConfigPre120(t *testing.T) {
 
 	name := "cpusetinconfig-pre120-" + t.Name()
 	// Create container with up to-date-API
-	container.Run(t, ctx, request.NewAPIClient(t), container.WithName(name),
+	container.Run(ctx, t, request.NewAPIClient(t), container.WithName(name),
 		container.WithCmd("true"),
 		func(c *container.TestContainerConfig) {
 			c.HostConfig.Resources.CpusetCpus = "0"

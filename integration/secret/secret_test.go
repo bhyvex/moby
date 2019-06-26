@@ -19,7 +19,7 @@ import (
 )
 
 func TestSecretInspect(t *testing.T) {
-	skip.If(t, testEnv.DaemonInfo.OSType != "linux")
+	skip.If(t, testEnv.DaemonInfo.OSType == "windows")
 
 	defer setupTest(t)()
 	d := swarm.NewSwarm(t, testEnv)
@@ -42,7 +42,7 @@ func TestSecretInspect(t *testing.T) {
 }
 
 func TestSecretList(t *testing.T) {
-	skip.If(t, testEnv.DaemonInfo.OSType != "linux")
+	skip.If(t, testEnv.DaemonInfo.OSType == "windows")
 
 	defer setupTest(t)()
 	d := swarm.NewSwarm(t, testEnv)
@@ -119,7 +119,7 @@ func createSecret(ctx context.Context, t *testing.T, client client.APIClient, na
 }
 
 func TestSecretsCreateAndDelete(t *testing.T) {
-	skip.If(t, testEnv.DaemonInfo.OSType != "linux")
+	skip.If(t, testEnv.DaemonInfo.OSType == "windows")
 
 	defer setupTest(t)()
 	d := swarm.NewSwarm(t, testEnv)
@@ -166,7 +166,7 @@ func TestSecretsCreateAndDelete(t *testing.T) {
 }
 
 func TestSecretsUpdate(t *testing.T) {
-	skip.If(t, testEnv.DaemonInfo.OSType != "linux")
+	skip.If(t, testEnv.DaemonInfo.OSType == "windows")
 
 	defer setupTest(t)()
 	d := swarm.NewSwarm(t, testEnv)
@@ -217,6 +217,7 @@ func TestSecretsUpdate(t *testing.T) {
 }
 
 func TestTemplatedSecret(t *testing.T) {
+	skip.If(t, testEnv.DaemonInfo.OSType == "windows")
 	d := swarm.NewSwarm(t, testEnv)
 	defer d.Stop(t)
 	client := d.NewClientT(t)
@@ -302,7 +303,7 @@ func TestTemplatedSecret(t *testing.T) {
 
 	var tasks []swarmtypes.Task
 	waitAndAssert(t, 60*time.Second, func(t *testing.T) bool {
-		tasks = swarm.GetRunningTasks(t, d, serviceID)
+		tasks = swarm.GetRunningTasks(t, client, serviceID)
 		return len(tasks) > 0
 	})
 
@@ -396,7 +397,7 @@ func waitAndAssert(t *testing.T, timeout time.Duration, f func(*testing.T) bool)
 	for {
 		select {
 		case <-after:
-			t.Fatalf("timed out waiting for condition")
+			t.Fatal("timed out waiting for condition")
 		default:
 		}
 		if f(t) {

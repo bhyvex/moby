@@ -148,6 +148,17 @@ func newImageBuildOptions(ctx context.Context, r *http.Request) (*types.ImageBui
 	}
 	options.Version = builderVersion
 
+	if versions.GreaterThanOrEqualTo(version, "1.40") {
+		outputsJSON := r.FormValue("outputs")
+		if outputsJSON != "" {
+			var outputs []types.ImageBuildOutput
+			if err := json.Unmarshal([]byte(outputsJSON), &outputs); err != nil {
+				return nil, err
+			}
+			options.Outputs = outputs
+		}
+	}
+
 	return options, nil
 }
 
@@ -170,6 +181,9 @@ func (br *buildRouter) postPrune(ctx context.Context, w http.ResponseWriter, r *
 		return errors.Wrap(err, "could not parse filters")
 	}
 	ksfv := r.FormValue("keep-storage")
+	if ksfv == "" {
+		ksfv = "0"
+	}
 	ks, err := strconv.Atoi(ksfv)
 	if err != nil {
 		return errors.Wrapf(err, "keep-storage is in bytes and expects an integer, got %v", ksfv)

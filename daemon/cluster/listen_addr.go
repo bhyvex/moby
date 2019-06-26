@@ -99,7 +99,12 @@ func validateDefaultAddrPool(defaultAddrPool []string, size uint32) error {
 	if size == 0 {
 		size = 24
 	}
-	if size > 32 {
+	// We allow max value as 29. We can have 8 IP addresses for max value 29
+	// If we allow 30, then we will get only 4 IP addresses. But with latest
+	// libnetwork LB scale implementation, we use total of 4 IP addresses for internal use.
+	// Hence keeping 29 as max value, we will have 8 IP addresses. This will be
+	// smallest subnet that can be used in overlay network.
+	if size > 29 {
 		return fmt.Errorf("subnet size is out of range: %d", size)
 	}
 	for i := range defaultAddrPool {
@@ -118,6 +123,25 @@ func validateDefaultAddrPool(defaultAddrPool []string, size uint32) error {
 	return nil
 }
 
+// getDataPathPort validates vxlan udp port (data path port) number.
+// if no port is set, the default (4789) is returned
+// valid port numbers are between 1024 and 49151
+func getDataPathPort(portNum uint32) (uint32, error) {
+	// if the value comes as 0 by any reason we set it to default value 4789
+	if portNum == 0 {
+		portNum = 4789
+		return portNum, nil
+	}
+	// IANA procedures for each range in detail
+	// The Well Known Ports, aka the System Ports, from 0-1023
+	// The Registered Ports, aka the User Ports, from 1024-49151
+	// The Dynamic Ports, aka the Private Ports, from 49152-65535
+	// So we can allow range between 1024 to 49151
+	if portNum < 1024 || portNum > 49151 {
+		return 0, fmt.Errorf("Datapath port number is not in valid range (1024-49151) : %d", portNum)
+	}
+	return portNum, nil
+}
 func resolveDataPathAddr(dataPathAddr string) (string, error) {
 	if dataPathAddr == "" {
 		// dataPathAddr is not defined

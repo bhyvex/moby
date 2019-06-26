@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io/ioutil"
+	"path/filepath"
 	"sort"
 	"testing"
 	"time"
@@ -13,14 +15,16 @@ import (
 	swarmtypes "github.com/docker/docker/api/types/swarm"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/integration/internal/swarm"
+	"github.com/docker/docker/internal/test/daemon"
 	"github.com/docker/docker/pkg/stdcopy"
 	"gotest.tools/assert"
 	is "gotest.tools/assert/cmp"
+	"gotest.tools/poll"
 	"gotest.tools/skip"
 )
 
 func TestConfigList(t *testing.T) {
-	skip.If(t, testEnv.DaemonInfo.OSType != "linux")
+	skip.If(t, testEnv.DaemonInfo.OSType == "windows")
 
 	defer setupTest(t)()
 	d := swarm.NewSwarm(t, testEnv)
@@ -102,7 +106,7 @@ func createConfig(ctx context.Context, t *testing.T, client client.APIClient, na
 }
 
 func TestConfigsCreateAndDelete(t *testing.T) {
-	skip.If(t, testEnv.DaemonInfo.OSType != "linux")
+	skip.If(t, testEnv.DaemonInfo.OSType == "windows")
 
 	defer setupTest(t)()
 	d := swarm.NewSwarm(t, testEnv)
@@ -130,7 +134,7 @@ func TestConfigsCreateAndDelete(t *testing.T) {
 }
 
 func TestConfigsUpdate(t *testing.T) {
-	skip.If(t, testEnv.DaemonInfo.OSType != "linux")
+	skip.If(t, testEnv.DaemonInfo.OSType == "windows")
 
 	defer setupTest(t)()
 	d := swarm.NewSwarm(t, testEnv)
@@ -184,6 +188,7 @@ func TestConfigsUpdate(t *testing.T) {
 }
 
 func TestTemplatedConfig(t *testing.T) {
+	skip.If(t, testEnv.DaemonInfo.OSType == "windows")
 	d := swarm.NewSwarm(t, testEnv)
 	defer d.Stop(t)
 	client := d.NewClientT(t)
@@ -267,18 +272,26 @@ func TestTemplatedConfig(t *testing.T) {
 	)
 
 	var tasks []swarmtypes.Task
-	waitAndAssert(t, 60*time.Second, func(t *testing.T) bool {
-		tasks = swarm.GetRunningTasks(t, d, serviceID)
-		return len(tasks) > 0
-	})
+	getRunningTasks := func(log poll.LogT) poll.Result {
+		tasks = swarm.GetRunningTasks(t, client, serviceID)
+		if len(tasks) > 0 {
+			return poll.Success()
+		}
+		return poll.Continue("task still waiting")
+	}
+	poll.WaitOn(t, getRunningTasks, swarm.ServicePoll, poll.WithTimeout(1*time.Minute))
 
 	task := tasks[0]
-	waitAndAssert(t, 60*time.Second, func(t *testing.T) bool {
+	getTask := func(log poll.LogT) poll.Result {
 		if task.NodeID == "" || (task.Status.ContainerStatus == nil || task.Status.ContainerStatus.ContainerID == "") {
 			task, _, _ = client.TaskInspectWithRaw(context.Background(), task.ID)
 		}
-		return task.NodeID != "" && task.Status.ContainerStatus != nil && task.Status.ContainerStatus.ContainerID != ""
-	})
+		if task.NodeID != "" && task.Status.ContainerStatus != nil && task.Status.ContainerStatus.ContainerID != "" {
+			return poll.Success()
+		}
+		return poll.Continue("task still waiting")
+	}
+	poll.WaitOn(t, getTask, swarm.ServicePoll, poll.WithTimeout(1*time.Minute))
 
 	attach := swarm.ExecTask(t, d, task, types.ExecConfig{
 		Cmd:          []string{"/bin/cat", "/" + templatedConfigName},
@@ -306,24 +319,8 @@ func assertAttachedStream(t *testing.T, attach types.HijackedResponse, expect st
 	assert.Check(t, is.Contains(buf.String(), expect))
 }
 
-func waitAndAssert(t *testing.T, timeout time.Duration, f func(*testing.T) bool) {
-	t.Helper()
-	after := time.After(timeout)
-	for {
-		select {
-		case <-after:
-			t.Fatalf("timed out waiting for condition")
-		default:
-		}
-		if f(t) {
-			return
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-}
-
 func TestConfigInspect(t *testing.T) {
-	skip.If(t, testEnv.DaemonInfo.OSType != "linux")
+	skip.If(t, testEnv.DaemonInfo.OSType == "windows")
 
 	defer setupTest(t)()
 	d := swarm.NewSwarm(t, testEnv)
@@ -421,6 +418,26 @@ func TestConfigCreateResolve(t *testing.T) {
 	entries, err = client.ConfigList(ctx, types.ConfigListOptions{})
 	assert.NilError(t, err)
 	assert.Assert(t, is.Equal(0, len(entries)))
+}
+
+func TestConfigDaemonLibtrustID(t *testing.T) {
+	skip.If(t, testEnv.DaemonInfo.OSType != "linux")
+	defer setupTest(t)()
+
+	d := daemon.New(t)
+	defer d.Stop(t)
+
+	trustKey := filepath.Join(d.RootDir(), "key.json")
+	err := ioutil.WriteFile(trustKey, []byte(`{"crv":"P-256","d":"dm28PH4Z4EbyUN8L0bPonAciAQa1QJmmyYd876mnypY","kid":"WTJ3:YSIP:CE2E:G6KJ:PSBD:YX2Y:WEYD:M64G:NU2V:XPZV:H2CR:VLUB","kty":"EC","x":"Mh5-JINSjaa_EZdXDttri255Z5fbCEOTQIZjAcScFTk","y":"eUyuAjfxevb07hCCpvi4Zi334Dy4GDWQvEToGEX4exQ"}`), 0644)
+	assert.NilError(t, err)
+
+	config := filepath.Join(d.RootDir(), "daemon.json")
+	err = ioutil.WriteFile(config, []byte(`{"deprecated-key-path": "`+trustKey+`"}`), 0644)
+	assert.NilError(t, err)
+
+	d.Start(t, "--config-file", config)
+	info := d.Info(t)
+	assert.Equal(t, info.ID, "WTJ3:YSIP:CE2E:G6KJ:PSBD:YX2Y:WEYD:M64G:NU2V:XPZV:H2CR:VLUB")
 }
 
 func configNamesFromList(entries []swarmtypes.Config) []string {

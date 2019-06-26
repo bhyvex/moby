@@ -8,6 +8,7 @@ import (
 
 	"github.com/containerd/containerd/filters"
 	"github.com/containerd/containerd/snapshots"
+	"github.com/docker/docker/pkg/idtools"
 	"github.com/moby/buildkit/cache/metadata"
 	"github.com/moby/buildkit/client"
 	"github.com/moby/buildkit/identity"
@@ -34,6 +35,7 @@ type Accessor interface {
 	GetFromSnapshotter(ctx context.Context, id string, opts ...RefOption) (ImmutableRef, error)
 	New(ctx context.Context, s ImmutableRef, opts ...RefOption) (MutableRef, error)
 	GetMutable(ctx context.Context, id string) (MutableRef, error) // Rebase?
+	IdentityMapping() *idtools.IdentityMapping
 }
 
 type Controller interface {
@@ -96,6 +98,11 @@ func (cm *cacheManager) init(ctx context.Context) error {
 	return nil
 }
 
+// IdentityMapping returns the userns remapping used for refs
+func (cm *cacheManager) IdentityMapping() *idtools.IdentityMapping {
+	return cm.Snapshotter.IdentityMapping()
+}
+
 // Close closes the manager and releases the metadata database lock. No other
 // method should be called after Close.
 func (cm *cacheManager) Close() error {
@@ -118,7 +125,7 @@ func (cm *cacheManager) GetFromSnapshotter(ctx context.Context, id string, opts 
 }
 
 // get requires manager lock to be taken
-func (cm *cacheManager) get(ctx context.Context, id string, fromSnapshotter bool, opts ...RefOption) (ImmutableRef, error) {
+func (cm *cacheManager) get(ctx context.Context, id string, fromSnapshotter bool, opts ...RefOption) (*immutableRef, error) {
 	rec, err := cm.getRecord(ctx, id, fromSnapshotter, opts...)
 	if err != nil {
 		return nil, err
@@ -186,7 +193,7 @@ func (cm *cacheManager) getRecord(ctx context.Context, id string, fromSnapshotte
 		return nil, errors.Wrap(errNotFound, err.Error())
 	}
 
-	var parent ImmutableRef
+	var parent *immutableRef
 	if info.Parent != "" {
 		parent, err = cm.get(ctx, info.Parent, fromSnapshotter, append(opts, NoUpdateLastUsed)...)
 		if err != nil {
@@ -194,7 +201,9 @@ func (cm *cacheManager) getRecord(ctx context.Context, id string, fromSnapshotte
 		}
 		defer func() {
 			if retErr != nil {
-				parent.Release(context.TODO())
+				parent.mu.Lock()
+				parent.release(context.TODO())
+				parent.mu.Unlock()
 			}
 		}()
 	}
@@ -217,9 +226,6 @@ func (cm *cacheManager) getRecord(ctx context.Context, id string, fromSnapshotte
 	}
 
 	if err := initializeMetadata(rec, opts...); err != nil {
-		if parent != nil {
-			parent.Release(context.TODO())
-		}
 		return nil, err
 	}
 
@@ -230,18 +236,18 @@ func (cm *cacheManager) getRecord(ctx context.Context, id string, fromSnapshotte
 func (cm *cacheManager) New(ctx context.Context, s ImmutableRef, opts ...RefOption) (MutableRef, error) {
 	id := identity.NewID()
 
-	var parent ImmutableRef
+	var parent *immutableRef
 	var parentID string
 	if s != nil {
-		var err error
-		parent, err = cm.Get(ctx, s.ID(), NoUpdateLastUsed)
+		p, err := cm.Get(ctx, s.ID(), NoUpdateLastUsed)
 		if err != nil {
 			return nil, err
 		}
-		if err := parent.Finalize(ctx, true); err != nil {
+		if err := p.Finalize(ctx, true); err != nil {
 			return nil, err
 		}
-		parentID = parent.ID()
+		parentID = p.ID()
+		parent = p.(*immutableRef)
 	}
 
 	if err := cm.Snapshotter.Prepare(ctx, id, parentID); err != nil {
@@ -728,6 +734,10 @@ func HasCachePolicyRetain(m withMetadata) bool {
 
 func CachePolicyRetain(m withMetadata) error {
 	return queueCachePolicy(m.Metadata(), cachePolicyRetain)
+}
+
+func CachePolicyDefault(m withMetadata) error {
+	return queueCachePolicy(m.Metadata(), cachePolicyDefault)
 }
 
 func WithDescription(descr string) RefOption {

@@ -71,6 +71,7 @@ func New(info logger.Info) (logger.Logger, error) {
 		"CONTAINER_ID_FULL": info.ContainerID,
 		"CONTAINER_NAME":    info.Name(),
 		"CONTAINER_TAG":     tag,
+		"IMAGE_NAME":        info.ImageName(),
 		"SYSLOG_IDENTIFIER": tag,
 	}
 	extraAttrs, err := info.ExtraAttributes(sanitizeKeyMod)
@@ -89,6 +90,7 @@ func validateLogOpt(cfg map[string]string) error {
 	for key := range cfg {
 		switch key {
 		case "labels":
+		case "labels-regex":
 		case "env":
 		case "env-regex":
 		case "tag":
@@ -104,7 +106,7 @@ func (s *journald) Log(msg *logger.Message) error {
 	for k, v := range s.vars {
 		vars[k] = v
 	}
-	if msg.PLogMetaData != nil {
+	if msg.PLogMetaData != nil && !msg.PLogMetaData.Last {
 		vars["CONTAINER_PARTIAL_MESSAGE"] = "true"
 	}
 

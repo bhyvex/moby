@@ -62,6 +62,17 @@ type Destination struct {
 	LowerThreshold      uint32
 	ActiveConnections   int
 	InactiveConnections int
+	Stats               DstStats
+}
+
+// DstStats defines IPVS destination (real server) statistics
+type DstStats SvcStats
+
+// Config defines IPVS timeout configuration
+type Config struct {
+	TimeoutTCP    time.Duration
+	TimeoutTCPFin time.Duration
+	TimeoutUDP    time.Duration
 }
 
 // Handle provides a namespace specific ipvs handle to program ipvs
@@ -183,4 +194,14 @@ func (i *Handle) GetService(s *Service) (*Service, error) {
 	}
 
 	return res[0], nil
+}
+
+// GetConfig returns the current timeout configuration
+func (i *Handle) GetConfig() (*Config, error) {
+	return i.doGetConfigCmd()
+}
+
+// SetConfig set the current timeout configuration. 0: no change
+func (i *Handle) SetConfig(c *Config) error {
+	return i.doSetConfigCmd(c)
 }

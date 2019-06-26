@@ -1,6 +1,7 @@
 package allocator
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -13,7 +14,6 @@ import (
 	"github.com/docker/swarmkit/manager/state/store"
 	"github.com/docker/swarmkit/protobuf/ptypes"
 	"github.com/pkg/errors"
-	"golang.org/x/net/context"
 )
 
 const (
@@ -69,10 +69,22 @@ type networkContext struct {
 
 func (a *Allocator) doNetworkInit(ctx context.Context) (err error) {
 	var netConfig *cnmallocator.NetworkConfig
-	if a.networkConfig != nil && a.networkConfig.DefaultAddrPool != nil {
-		netConfig = &cnmallocator.NetworkConfig{
-			DefaultAddrPool: a.networkConfig.DefaultAddrPool,
-			SubnetSize:      a.networkConfig.SubnetSize,
+	// There are two ways user can invoke swarm init
+	// with default address pool & vxlan port  or with only vxlan port
+	// hence we need two different way to construct netconfig
+	if a.networkConfig != nil {
+		if a.networkConfig.DefaultAddrPool != nil {
+			netConfig = &cnmallocator.NetworkConfig{
+				DefaultAddrPool: a.networkConfig.DefaultAddrPool,
+				SubnetSize:      a.networkConfig.SubnetSize,
+				VXLANUDPPort:    a.networkConfig.VXLANUDPPort,
+			}
+		} else if a.networkConfig.VXLANUDPPort != 0 {
+			netConfig = &cnmallocator.NetworkConfig{
+				DefaultAddrPool: nil,
+				SubnetSize:      0,
+				VXLANUDPPort:    a.networkConfig.VXLANUDPPort,
+			}
 		}
 	}
 
@@ -172,7 +184,7 @@ func (a *Allocator) doNetworkAlloc(ctx context.Context, ev events.Event) {
 		}
 		if IsIngressNetwork(n) && nc.ingressNetwork != nil {
 			log.G(ctx).Errorf("Cannot allocate ingress network %s (%s) because another ingress network is already present: %s (%s)",
-				n.ID, n.Spec.Annotations.Name, nc.ingressNetwork.ID, nc.ingressNetwork.Spec.Annotations)
+				n.ID, n.Spec.Annotations.Name, nc.ingressNetwork.ID, nc.ingressNetwork.Spec.Annotations.Name)
 			break
 		}
 
@@ -977,8 +989,11 @@ func (a *Allocator) allocateNode(ctx context.Context, node *api.Node, existingAd
 
 	nc := a.netCtx
 
+	var nwIDs = make(map[string]struct{}, len(networks))
+
 	// go through all of the networks we've passed in
 	for _, network := range networks {
+		nwIDs[network.ID] = struct{}{}
 
 		// for each one, create space for an attachment. then, search through
 		// all of the attachments already on the node. if the attachment
@@ -998,6 +1013,10 @@ func (a *Allocator) allocateNode(ctx context.Context, node *api.Node, existingAd
 		}
 
 		if lbAttachment == nil {
+			// if we're restoring state, we should not add an attachment here.
+			if existingAddressesOnly {
+				continue
+			}
 			lbAttachment = &api.NetworkAttachment{}
 			node.Attachments = append(node.Attachments, lbAttachment)
 		}
@@ -1033,17 +1052,8 @@ func (a *Allocator) allocateNode(ctx context.Context, node *api.Node, existingAd
 	// https://github.com/golang/go/wiki/SliceTricks#filtering-without-allocating
 	attachments := node.Attachments[:0]
 	for _, attach := range node.Attachments {
-		// for every attachment, go through every network. if the attachment
-		// belongs to one of the networks, then go to the next attachment. if
-		// no network matches, then the the attachment should be removed.
-		attachmentBelongs := false
-		for _, network := range networks {
-			if network.ID == attach.Network.ID {
-				attachmentBelongs = true
-				break
-			}
-		}
-		if attachmentBelongs {
+		if _, ok := nwIDs[attach.Network.ID]; ok {
+			// attachment belongs to one of the networks, so keep it
 			attachments = append(attachments, attach)
 		} else {
 			// free the attachment and remove it from the node's attachments by

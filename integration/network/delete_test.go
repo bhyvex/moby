@@ -6,8 +6,8 @@ import (
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/versions"
+	dclient "github.com/docker/docker/client"
 	"github.com/docker/docker/integration/internal/network"
-	"github.com/docker/docker/internal/test/request"
 	"gotest.tools/assert"
 	is "gotest.tools/assert/cmp"
 	"gotest.tools/skip"
@@ -27,13 +27,10 @@ func containsNetwork(nws []types.NetworkResource, networkID string) bool {
 // first network's ID as name.
 //
 // After successful creation, properties of all three networks is returned
-func createAmbiguousNetworks(t *testing.T) (string, string, string) {
-	client := request.NewAPIClient(t)
-	ctx := context.Background()
-
-	testNet := network.CreateNoError(t, ctx, client, "testNet")
-	idPrefixNet := network.CreateNoError(t, ctx, client, testNet[:12])
-	fullIDNet := network.CreateNoError(t, ctx, client, testNet)
+func createAmbiguousNetworks(ctx context.Context, t *testing.T, client dclient.APIClient) (string, string, string) {
+	testNet := network.CreateNoError(ctx, t, client, "testNet")
+	idPrefixNet := network.CreateNoError(ctx, t, client, testNet[:12])
+	fullIDNet := network.CreateNoError(ctx, t, client, testNet)
 
 	nws, err := client.NetworkList(ctx, types.NetworkListOptions{})
 	assert.NilError(t, err)
@@ -44,14 +41,15 @@ func createAmbiguousNetworks(t *testing.T) (string, string, string) {
 	return testNet, idPrefixNet, fullIDNet
 }
 
+// TestNetworkCreateDelete tests creation and deletion of a network.
 func TestNetworkCreateDelete(t *testing.T) {
 	skip.If(t, testEnv.DaemonInfo.OSType != "linux")
 	defer setupTest(t)()
-	client := request.NewAPIClient(t)
+	client := testEnv.APIClient()
 	ctx := context.Background()
 
 	netName := "testnetwork_" + t.Name()
-	network.CreateNoError(t, ctx, client, netName,
+	network.CreateNoError(ctx, t, client, netName,
 		network.WithCheckDuplicate(),
 	)
 	assert.Check(t, IsNetworkAvailable(client, netName))
@@ -67,10 +65,12 @@ func TestNetworkCreateDelete(t *testing.T) {
 // ID is removed, and not the network with the given name.
 func TestDockerNetworkDeletePreferID(t *testing.T) {
 	skip.If(t, versions.LessThan(testEnv.DaemonAPIVersion(), "1.34"), "broken in earlier versions")
+	skip.If(t, testEnv.OSType == "windows",
+		"FIXME. Windows doesn't run DinD and uses networks shared between control daemon and daemon under test")
 	defer setupTest(t)()
-	client := request.NewAPIClient(t)
+	client := testEnv.APIClient()
 	ctx := context.Background()
-	testNet, idPrefixNet, fullIDNet := createAmbiguousNetworks(t)
+	testNet, idPrefixNet, fullIDNet := createAmbiguousNetworks(ctx, t, client)
 
 	// Delete the network using a prefix of the first network's ID as name.
 	// This should the network name with the id-prefix, not the original network.

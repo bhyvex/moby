@@ -7,6 +7,7 @@ import (
 	"sort"
 
 	"github.com/moby/buildkit/solver/pb"
+	"github.com/moby/buildkit/util/system"
 	digest "github.com/opencontainers/go-digest"
 	"github.com/pkg/errors"
 )
@@ -19,6 +20,7 @@ type Meta struct {
 	ProxyEnv   *ProxyEnv
 	ExtraHosts []HostIP
 	Network    pb.NetMode
+	Security   pb.SecurityMode
 }
 
 func NewExecOp(root Output, meta Meta, readOnly bool, c Constraints) *ExecOp {
@@ -51,7 +53,7 @@ type mount struct {
 	cacheID      string
 	tmpfs        bool
 	cacheSharing CacheMountSharingMode
-	// hasOutput bool
+	noOutput     bool
 }
 
 type ExecOp struct {
@@ -78,6 +80,8 @@ func (e *ExecOp) AddMount(target string, source Output, opt ...MountOption) Outp
 		m.output = source
 	} else if m.tmpfs {
 		m.output = &output{vertex: e, err: errors.Errorf("tmpfs mount for %s can't be used as a parent", target)}
+	} else if m.noOutput {
+		m.output = &output{vertex: e, err: errors.Errorf("mount marked no-output and %s can't be used as a parent", target)}
 	} else {
 		o := &output{vertex: e, getIndex: e.getMountIndexFn(m)}
 		if p := e.constraints.Platform; p != nil {
@@ -142,6 +146,13 @@ func (e *ExecOp) Marshal(c *Constraints) (digest.Digest, []byte, *pb.OpMetadata,
 			e.meta.Env = e.meta.Env.AddOrReplace("SSH_AUTH_SOCK", e.ssh[0].Target)
 		}
 	}
+	if c.Caps != nil {
+		if err := c.Caps.Supports(pb.CapExecMetaSetsDefaultPath); err != nil {
+			e.meta.Env = e.meta.Env.SetDefault("PATH", system.DefaultPathEnv)
+		} else {
+			addCap(&e.constraints, pb.CapExecMetaSetsDefaultPath)
+		}
+	}
 
 	meta := &pb.Meta{
 		Args: e.meta.Args,
@@ -158,11 +169,16 @@ func (e *ExecOp) Marshal(c *Constraints) (digest.Digest, []byte, *pb.OpMetadata,
 	}
 
 	peo := &pb.ExecOp{
-		Meta:    meta,
-		Network: e.meta.Network,
+		Meta:     meta,
+		Network:  e.meta.Network,
+		Security: e.meta.Security,
 	}
 	if e.meta.Network != NetModeSandbox {
 		addCap(&e.constraints, pb.CapExecMetaNetwork)
+	}
+
+	if e.meta.Security != SecurityModeSandbox {
+		addCap(&e.constraints, pb.CapExecMetaSecurity)
 	}
 
 	if p := e.meta.ProxyEnv; p != nil {
@@ -189,6 +205,14 @@ func (e *ExecOp) Marshal(c *Constraints) (digest.Digest, []byte, *pb.OpMetadata,
 		} else if m.source != nil {
 			addCap(&e.constraints, pb.CapExecMountBind)
 		}
+	}
+
+	if len(e.secrets) > 0 {
+		addCap(&e.constraints, pb.CapExecMountSecret)
+	}
+
+	if len(e.ssh) > 0 {
+		addCap(&e.constraints, pb.CapExecMountSSH)
 	}
 
 	pop, md := MarshalConstraints(c, &e.constraints)
@@ -226,7 +250,7 @@ func (e *ExecOp) Marshal(c *Constraints) (digest.Digest, []byte, *pb.OpMetadata,
 		}
 
 		outputIndex := pb.OutputIndex(-1)
-		if !m.readonly && m.cacheID == "" && !m.tmpfs {
+		if !m.noOutput && !m.readonly && m.cacheID == "" && !m.tmpfs {
 			outputIndex = pb.OutputIndex(outIndex)
 			outIndex++
 		}
@@ -256,10 +280,6 @@ func (e *ExecOp) Marshal(c *Constraints) (digest.Digest, []byte, *pb.OpMetadata,
 			pm.MountType = pb.MountType_TMPFS
 		}
 		peo.Mounts = append(peo.Mounts, pm)
-	}
-
-	if len(e.secrets) > 0 {
-		addCap(&e.constraints, pb.CapMountSecret)
 	}
 
 	for _, s := range e.secrets {
@@ -326,7 +346,7 @@ func (e *ExecOp) getMountIndexFn(m *mount) func() (pb.OutputIndex, error) {
 
 		i := 0
 		for _, m2 := range e.mounts {
-			if m2.readonly || m2.cacheID != "" {
+			if m2.noOutput || m2.readonly || m2.cacheID != "" {
 				continue
 			}
 			if m == m2 {
@@ -367,6 +387,10 @@ func SourcePath(src string) MountOption {
 	}
 }
 
+func ForceNoOutput(m *mount) {
+	m.noOutput = true
+}
+
 func AsPersistentCacheDir(id string, sharing CacheMountSharingMode) MountOption {
 	return func(m *mount) {
 		m.cacheID = id
@@ -393,6 +417,12 @@ func (fn runOptionFunc) SetRunOption(ei *ExecInfo) {
 func Network(n pb.NetMode) RunOption {
 	return runOptionFunc(func(ei *ExecInfo) {
 		ei.State = network(n)(ei.State)
+	})
+}
+
+func Security(s pb.SecurityMode) RunOption {
+	return runOptionFunc(func(ei *ExecInfo) {
+		ei.State = security(s)(ei.State)
 	})
 }
 
@@ -485,6 +515,12 @@ func (fn sshOptionFunc) SetSSHOption(si *SSHInfo) {
 func SSHID(id string) SSHOption {
 	return sshOptionFunc(func(si *SSHInfo) {
 		si.ID = id
+	})
+}
+
+func SSHSocketTarget(target string) SSHOption {
+	return sshOptionFunc(func(si *SSHInfo) {
+		si.Target = target
 	})
 }
 
@@ -604,4 +640,9 @@ const (
 	NetModeSandbox = pb.NetMode_UNSET
 	NetModeHost    = pb.NetMode_HOST
 	NetModeNone    = pb.NetMode_NONE
+)
+
+const (
+	SecurityModeInsecure = pb.SecurityMode_INSECURE
+	SecurityModeSandbox  = pb.SecurityMode_SANDBOX
 )
